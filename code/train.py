@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import pickle as pkl
+import os.path
 
 from argparse import ArgumentParser
 
@@ -22,58 +23,23 @@ from sklearn.metrics import f1_score, accuracy_score, precision_score, recall_sc
 
 from model import *
 from utils import *
+from data import *
+
+from typing import Optional
 
 DEFAULT_HIDDEN_SIZE = 512
-
-class DDIDataLoader:
-
-    def __init__(self, graph: dgl.DGLGraph, train_eid: np.ndarray, batch_size: int = 1024) -> None:
-        '''
-        Parameters
-        ----------
-        graph : DGLGraph
-            The heterogeneous graph that contains 'Drug', 'Protein' nodes and 'DDI', 'DPI', 'PDI', 'PPI' edges.
-            The graph should not be bidirected.
-        train_eid : np.ndarray
-            The edge indices of the DDI graph used for training.
-        batch_size : int
-            The batch size of the dataloader.
-        '''
-        self.graph = graph
-        self.dataloader = dgl.dataloading.DataLoader(
-            self.graph['Drug', : , 'Drug'], 
-            indices=train_eid,
-            graph_sampler=dgl.dataloading.as_edge_prediction_sampler(
-                sampler=dgl.dataloading.NeighborSampler([-1]),
-                negative_sampler=dgl.dataloading.negative_sampler.GlobalUniform(1),
-                # exclude='self',
-            ),
-            batch_size=batch_size, 
-            shuffle=True, 
-            drop_last=False,
-            num_workers=1,
-        )
-
-    def __iter__(self):
-        with self.dataloader.enable_cpu_affinity():
-            for input_nodes, pos_pair_graph, neg_pair_graph, blocks in self.dataloader:
-                pos_pair_graph = to_bidirected(pos_pair_graph)
-                neg_pair_graph = to_bidirected(neg_pair_graph)
-                ddi_graph_split = split_etype(blocks[0])
-                graph = combine_graphs(ddi_graph_split, self.graph['DPI'], self.graph['PDI'], self.graph['PPI'])
-                graph.ndata['feature'] = self.graph.ndata['feature']
-                graph = to_bidirected(graph)
-                yield input_nodes, pos_pair_graph, neg_pair_graph, graph
-
+DEFAULT_BATCH_SIZE = None
+DEFAULT_LEARNING_RATE = 1e-3
+DEFAULT_MIN_SAMPLE_SIZE = 10
 
 class Model(pl.LightningModule):
 
     def __init__(self, 
                  pkl_path: str = '../dataset.pkl', 
                  hidden_size=DEFAULT_HIDDEN_SIZE, 
-                 learning_rate: float = 1e-3,
-                 minimum_sample_count: int = 10,
-                 batch_size: int = 1024
+                 learning_rate: float = DEFAULT_LEARNING_RATE,
+                 min_sample_size: int = DEFAULT_MIN_SAMPLE_SIZE,
+                 batch_size: Optional[int] = DEFAULT_BATCH_SIZE
                  ):
         super().__init__()
 
@@ -83,58 +49,36 @@ class Model(pl.LightningModule):
         self.batch_size = batch_size
         self.save_hyperparameters()
 
-        # load data
-        self.data = pkl.load(open('../dataset.pkl', 'rb'))
-        self.data['Drugs'] = self.data['Drugs'].reset_index().reset_index().set_index('Drug_ID')
-        self.data['Proteins'] = self.data['Proteins'].reset_index().reset_index().set_index('Protein_ID')
-        self.graph = get_graph(self.data)
-        self.ndata = self.graph.ndata
-        self.num_nodes_dict = {ntype: self.graph.number_of_nodes(ntype) for ntype in self.graph.ntypes}
-        self.ddi_graph = self.graph['Drug', :, 'Drug']
-
-
-        # drop the type which has not enough samples
-        minimum_sample_count = 10
-        types = pd.Series(self.ddi_graph.edata[dgl.ETYPE].cpu())
-        value_counts = types.value_counts()
-        types_to_drop = value_counts[value_counts < minimum_sample_count].index
-        print('Ignore DDI types:', sorted(types_to_drop), 'since they have less than', minimum_sample_count, 'samples')
-        indices_to_drop = types[types.isin(types_to_drop)].index
-        self.ddi_graph = dgl.remove_edges(self.ddi_graph, indices_to_drop)
-        self.graph = combine_graphs(split_etype(self.ddi_graph), self.graph['DPI'], self.graph['PDI'], self.graph['PPI'])
-        self.graph.ndata['feature'] = self.ndata['feature']
-        # self.ddi_graph = self.graph['Drug', :, 'Drug']
+        self.dataset = DDIDataSet(pkl_path, min_sample_size)
 
         # build model
-        out_dim = self.data['DDI']['Y'].nunique() + 1
         self.sage = RGCN(
-            in_feats_d = self.data['DrugFeatures'].shape[1],
-            in_feats_p = self.data['ProteinFeatures'].shape[1],
+            in_feats_d = self.dataset.num_drug_features,
+            in_feats_p = self.dataset.num_protein_features,
             hidden_size = hidden_size,
-            out_feats = out_dim,
-            rel_names = [f'DDI_{y:02}' for y in self.data['DDI']['Y'].unique()] + ['DPI', 'PDI', 'PPI']
+            out_feats = self.dataset.num_ddi_types + 1,
+            rel_names = [f'DDI_{y:02}' for y in self.dataset.ddi_types] + ['DPI', 'PDI', 'PPI']
         )
         self.predictor = MLPPredictor(
             in_features = hidden_size,
-            out_classes = out_dim
+            out_classes = self.dataset.num_ddi_types + 1
         )
+
         self.loss_func = nn.CrossEntropyLoss()
 
     def setup(self, stage: str = None) -> None:
         self.train_eid, self.test_eid = train_test_split(
-            np.arange(self.ddi_graph.num_edges()), 
-            test_size=0.2, stratify=self.ddi_graph.edata[dgl.ETYPE].cpu()
+            np.arange(self.dataset.num_ddi),
+            test_size=0.2, stratify=self.dataset.ddi_graph.edata[dgl.ETYPE].cpu()
         )
 
     def train_dataloader(self) -> TRAIN_DATALOADERS:
-        return DDIDataLoader(self.graph, self.train_eid, batch_size=self.batch_size)
+        return DDIDataLoader(self.dataset, self.train_eid, batch_size=self.batch_size)
 
-    def training_step(self, batch: tuple, batch_idx: int) -> STEP_OUTPUT:
-        input_nodes, pos_pair_graph, neg_pair_graph, graph = batch
-        
-        h = self.sage(graph.to(self.device), {k: v.to(self.device) for k, v in graph.ndata['feature'].items()})
-        pos_score = self.predictor(pos_pair_graph, h['Drug'][pos_pair_graph.ndata[dgl.NID]])
-        neg_score = self.predictor(neg_pair_graph, h['Drug'][neg_pair_graph.ndata[dgl.NID]])
+    def training_step(self, batch: tuple[dgl.DGLGraph, dgl.DGLGraph, dgl.DGLGraph], batch_idx: int) -> STEP_OUTPUT:
+        graph, pos_pair_graph, neg_pair_graph = batch
+
+        pos_score, neg_score = self(graph.to(self.device), pos_pair_graph, neg_pair_graph)
         prediction = torch.cat([pos_score, neg_score])
         real_label = torch.cat([pos_pair_graph.edata[dgl.ETYPE] + 1, 
                                 torch.zeros(neg_score.shape[0], device=self.device, dtype=torch.int)])
@@ -144,14 +88,12 @@ class Model(pl.LightningModule):
         return loss
     
     def val_dataloader(self) -> EVAL_DATALOADERS:
-        return DDIDataLoader(self.graph, self.test_eid, batch_size=self.batch_size)
+        return DDIDataLoader(self.dataset, self.test_eid, batch_size=self.batch_size)
 
-    def validation_step(self, batch: tuple, batch_idx: int) -> STEP_OUTPUT:
-        input_nodes, pos_pair_graph, neg_pair_graph, graph = batch
+    def validation_step(self, batch: tuple[dgl.DGLGraph, dgl.DGLGraph, dgl.DGLGraph], batch_idx: int) -> STEP_OUTPUT:
+        graph, pos_pair_graph, neg_pair_graph = batch
         
-        h = self.sage(graph.to(self.device), {k: v.to(self.device) for k, v in graph.ndata['feature'].items()})
-        pos_score = self.predictor(pos_pair_graph, h['Drug'][pos_pair_graph.ndata[dgl.NID]])
-        neg_score = self.predictor(neg_pair_graph, h['Drug'][neg_pair_graph.ndata[dgl.NID]])
+        pos_score, neg_score = self(graph.to(self.device), pos_pair_graph, neg_pair_graph)
         prediction = torch.cat([pos_score, neg_score])
         real_label = torch.cat([pos_pair_graph.edata[dgl.ETYPE] + 1, 
                                 torch.zeros(neg_score.shape[0], device=self.device, dtype=torch.int)])
@@ -163,16 +105,32 @@ class Model(pl.LightningModule):
         accuracy = accuracy_score(real_label, pred_label)
         precision = precision_score(real_label, pred_label, average='weighted')
         recall = recall_score(real_label, pred_label, average='weighted')
-        self.log_dict({'val_f1': f1, 'val_accuracy': accuracy, 'val_precision': precision, 'val_recall': recall, 'val_loss': loss})
+        self.log_dict({'val_f1': f1, 'val_accuracy': accuracy, 'val_precision': precision, 'val_recall': recall, 'val_loss': loss}, batch_size=1)
         return loss
     
     def configure_optimizers(self):
         return optim.Adam(self.parameters(), lr=self.learning_rate)
     
-    def forward(self, g, features):
-        h = self.sage(g, features)
-        return self.predictor(g, h['Drug'])
-
+    def forward(self, hg: dgl.DGLGraph, *ddi_graphs: dgl.DGLGraph) -> tuple[torch.Tensor, ...]:
+        '''
+        Parameters
+        ----------
+        hg : DGLGraph
+            The heterogeneous graph that contains 'Drug', 'Protein' nodes and 'DDI', 'DPI', 'PDI', 'PPI' edges.
+            The graph should be bidirected.
+        ddi_graphs : DGLGraph
+            The graphs that contains 'Drug' nodes and 'DDI' edges for prediction.
+        Returns
+        -------
+        tuple[torch.Tensor, ...]
+            The prediction of the DDI types as probability vectors.
+        '''
+        h = self.sage(hg, hg.ndata['feature'])
+        return tuple(
+            self.predictor(g, h['Drug'][g.ndata[dgl.NID]]) 
+            if dgl.NID in g.ndata.keys() else self.predictor(g, h['Drug'])
+            for g in ddi_graphs
+        )
 
 def config_parser(parser: ArgumentParser = ArgumentParser()) -> ArgumentParser:
 
@@ -184,9 +142,9 @@ def config_parser(parser: ArgumentParser = ArgumentParser()) -> ArgumentParser:
     model_parser = new_parser.add_argument_group('Model', 'Arguments for Model')
     model_parser.add_argument('--pkl-path', type=str, default='../dataset.pkl', help='Path to the dataset pickle file')
     model_parser.add_argument('--hidden-size', type=int, default=DEFAULT_HIDDEN_SIZE, help='Hidden size of the model')
-    model_parser.add_argument('--learning-rate', type=float, default=1e-3, help='Learning rate of the optimizer')
-    model_parser.add_argument('--batch-size', type=int, default=1024, help='Batch size of the dataloader')
-    model_parser.add_argument('--minimum-sample-count', type=int, default=10, help='Minimum sample count of each DDI type')
+    model_parser.add_argument('--learning-rate', type=float, default=DEFAULT_LEARNING_RATE, help='Learning rate of the optimizer')
+    model_parser.add_argument('--batch-size', type=int, default=DEFAULT_BATCH_SIZE, help='Batch size of the dataloader')
+    model_parser.add_argument('--min-sample-size', type=int, default=DEFAULT_MIN_SAMPLE_SIZE, help='Minimum sample size of each DDI type, used to filter out the DDI types with few samples')
 
 
     resume_parser = resume_parser.add_argument_group('Resume')
@@ -208,12 +166,11 @@ if __name__ == '__main__':
     parser = config_parser()
     args = parser.parse_args()
 
-    print(args)
-
     monitor_config = dict(
         monitor='val_loss',
         mode='min',
     )
+    
     checkpoint_callback = ModelCheckpoint(
         dirpath='./model_checkpoint',
         save_top_k=3,
@@ -242,13 +199,18 @@ if __name__ == '__main__':
         profiler='advanced',
     )
 
+    checkpoint_callback.dirpath = os.path.join(
+        trainer.logger.log_dir,
+        'checkpoints'
+    )
+
     match args.subcommand:
         case 'new':
             model = Model(
                 pkl_path=args.pkl_path, 
                 hidden_size=args.hidden_size, 
                 learning_rate=args.learning_rate,
-                minimum_sample_count=args.minimum_sample_count,
+                min_sample_size=args.min_sample_size,
                 batch_size=args.batch_size
             )
             trainer.fit(model)

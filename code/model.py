@@ -1,11 +1,13 @@
+import dgl
 import dgl.nn
+import dgl.udf
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+from typing import Iterable
 
 class RGCN(nn.Module):
-    def __init__(self, in_feats_d, in_feats_p, hidden_size, out_feats, rel_names):
+    def __init__(self, in_feats_d: int, in_feats_p: int, hidden_size: int, out_feats: int, rel_names: Iterable[str]):
         super().__init__()
         Conv1_dict = {rel_name: dgl.nn.GraphConv(in_feats_d, hidden_size) for rel_name in rel_names}
         Conv1_dict['PDI'] = dgl.nn.GraphConv(in_feats_p, hidden_size)
@@ -16,7 +18,7 @@ class RGCN(nn.Module):
         Conv3_dict = {rel_name: dgl.nn.GraphConv(hidden_size, hidden_size) for rel_name in rel_names}
         self.conv3 = dgl.nn.HeteroGraphConv(Conv3_dict, aggregate='sum')
 
-    def forward(self, graph, inputs):
+    def forward(self, graph: dgl.DGLGraph, inputs: dict[str, torch.Tensor]):
         h = self.conv1(graph, inputs)
         h = {k: F.relu(v) for k, v in h.items()}
         h = self.conv2(graph, h)
@@ -25,12 +27,12 @@ class RGCN(nn.Module):
         return h
 
 class MLPPredictor(nn.Module):
-    def __init__(self, in_features, out_classes):
+    def __init__(self, in_features: int, out_classes: int):
         super().__init__()
         self.W1 = nn.Linear(in_features * 2, in_features)
         self.W2 = nn.Linear(in_features, out_classes)
 
-    def apply_edges(self, edges):
+    def apply_edges(self, edges: dgl.udf.EdgeBatch) -> dict[str, torch.Tensor]:
         h_u = edges.src['h']
         h_v = edges.dst['h']
         predict_input = torch.cat([h_u, h_v], 1)
@@ -39,7 +41,7 @@ class MLPPredictor(nn.Module):
         score = self.W2(h)
         return {'score': score}
 
-    def forward(self, graph, h):
+    def forward(self, graph: dgl.DGLGraph, h: torch.Tensor):
         '''
         Parameters
         ----------

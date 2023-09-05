@@ -14,6 +14,7 @@ import torch.nn as nn
 import torch.optim as optim
 import pytorch_lightning as pl
 from pytorch_lightning import Trainer
+from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.utilities.types import STEP_OUTPUT, TRAIN_DATALOADERS, EVAL_DATALOADERS
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
@@ -146,13 +147,14 @@ def config_parser(parser: ArgumentParser = ArgumentParser()) -> ArgumentParser:
     model_parser.add_argument('--batch-size', type=int, default=DEFAULT_BATCH_SIZE, help='Batch size of the dataloader')
     model_parser.add_argument('--min-sample-size', type=int, default=DEFAULT_MIN_SAMPLE_SIZE, help='Minimum sample size of each DDI type, used to filter out the DDI types with few samples')
 
-
     resume_parser = resume_parser.add_argument_group('Resume')
     resume_parser.add_argument('checkpoint_path', type=str, default=None)
     
     for p in (model_parser, resume_parser):
         trainer_parser = p.add_argument_group('Trainer', 'Arguments for Trainer')
-        trainer_parser.add_argument('--early-stop-patience', type=int, default=3, help='Patience for early stopping')
+        trainer_parser.add_argument('--epochs', type=int, default=-1, help='Number of epochs to train, default is -1, which means train forever')
+        trainer_parser.add_argument('--early-stop-patience', type=int, default=3, help='Patience for early stopping, default is 3, set to 0 to disable early stopping')
+        trainer_parser.add_argument('--epochs-per-validation', type=int, default=1, help='Number of epochs per validation, default is 1')
 
     return parser
 
@@ -182,21 +184,22 @@ if __name__ == '__main__':
         patience=args.early_stop_patience,
         **monitor_config
     )
-    
-    early_stop_callback = EarlyStopping(
-        monitor='val_loss',
-        min_delta=0.00,
-        patience=args.early_stop_patience,
-        verbose=False,
-        mode='min'
+
+    logger = TensorBoardLogger(
+        save_dir='.',
+        default_hp_metric=False,
+        version=None if args.subcommand == 'new' else args.checkpoint_path.split('/')[-3]
     )
 
     trainer = Trainer(
         max_epochs=-1,
         strategy='ddp_find_unused_parameters_true',
-        callbacks=[checkpoint_callback, early_stop_callback],
+        callbacks=[checkpoint_callback, early_stop_callback] \
+            if args.early_stop_patience > 0 else [checkpoint_callback],
         log_every_n_steps=1,
+        check_val_every_n_epoch=args.epochs_per_validation,
         profiler='advanced',
+        logger=logger
     )
 
     checkpoint_callback.dirpath = os.path.join(
@@ -215,6 +218,7 @@ if __name__ == '__main__':
             )
             trainer.fit(model)
         case 'resume':
-            print("resume from", args.checkpoint_path)
+            print(f'resume from "{args.checkpoint_path}"')
             model = Model.load_from_checkpoint(args.checkpoint_path)
-            trainer.fit(model, checkpoint_path=args.checkpoint_path)
+            trainer.fit(model, ckpt_path=args.checkpoint_path)
+            

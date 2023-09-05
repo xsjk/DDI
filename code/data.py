@@ -51,10 +51,54 @@ class DDIDataSet:
     def ddi_types(self) -> list[int]:
         return sorted(self.data['DDI']['Y'].unique())
     
+    def fullgraph_from_ddi(self, ddi_graph: dgl.DGLGraph) -> dgl.DGLGraph:
+        '''
+        Parameters
+        ----------
+        ddi_graph : dgl.DGLGraph
+            The heterogeneous graph with selected DDI edges and all DPI, PDI, PPI edges.
+
+        Returns
+        -------
+        dgl.DGLGraph
+            The heterogeneous graph with all DDI edges and all DPI, PDI, PPI edges.
+        '''
+        fullgraph = combine_graphs(split_etype(ddi_graph), self.graph['DPI'], self.graph['PDI'], self.graph['PPI'])
+        dgl.utils.set_new_frames(fullgraph, node_frames=dgl.utils.extract_node_subframes(self.graph, None))
+        return fullgraph
+    
+    def ddi_subgraph(self, eids: np.ndarray) -> dgl.DGLGraph:
+        '''
+        Parameters
+        ----------
+        eids : np.ndarray
+            The edge indices of selected DDI edges.
+
+        Returns
+        -------
+        dgl.DGLGraph
+            The heterogeneous graph with selected DDI edges.
+        '''
+        return self.ddi_graph.edge_subgraph(eids)
+    
+    def subgraph(self, eids: np.ndarray) -> dgl.DGLGraph:
+        '''
+        Parameters
+        ----------
+        eids : np.ndarray
+            The edge indices of selected DDI edges.
+
+        Returns
+        -------
+        dgl.DGLGraph
+            The heterogeneous graph with selected DDI edges and all DPI, PDI, PPI edges.
+        '''
+        return self.fullgraph_from_ddi(self.ddi_subgraph(eids))
+
 
 class DDIDataLoader:
 
-    def __init__(self, dataset: DDIDataSet, eids: np.ndarray, batch_size: Optional[int], neg_sample_rate: float = 1.0) -> None:
+    def __init__(self, dataset: DDIDataSet, eids: np.ndarray, batch_size: Optional[int], neg_sample_rate: float = 0.1) -> None:
         '''
         Parameters
         ----------
@@ -74,7 +118,9 @@ class DDIDataLoader:
                 indices=eids,
                 graph_sampler=dgl.dataloading.as_edge_prediction_sampler(
                     sampler=dgl.dataloading.NeighborSampler([-1]),
-                    negative_sampler=dgl.dataloading.negative_sampler.GlobalUniform(neg_sample_rate),
+                    negative_sampler=dgl.dataloading.negative_sampler.GlobalUniform(int(round(
+                        neg_sample_rate * dataset.num_ddi / batch_size
+                    ))),
                     exclude='self',
                 ),
                 batch_size=batch_size, 
@@ -83,18 +129,16 @@ class DDIDataLoader:
                 num_workers=1,
             )
         else:
-            self.ddi_graph = self.dataset.ddi_graph.edge_subgraph(eids)
-            self.ddi_graph_undirected = to_bidirected(self.ddi_graph)
-            self.graph = combine_graphs(
-                split_etype(self.ddi_graph), 
-                self.dataset.graph['DPI'], 
-                self.dataset.graph['PDI'], 
-                self.dataset.graph['PPI']
-            )
-            self.graph.ndata['feature'] = self.dataset.graph.ndata['feature']
-            self.graph_undirected = to_bidirected(self.graph)
+            self.graph_undirected = to_bidirected(self.dataset.subgraph(eids))
+            self.ddi_graph_undirected = to_bidirected(self.dataset.ddi_subgraph(eids))
 
-    def __iter__(self):
+    def __iter__(self) -> tuple[dgl.DGLGraph, dgl.DGLGraph, dgl.DGLGraph]:
+        '''
+        Returns
+        -------
+        tuple[dgl.DGLGraph, dgl.DGLGraph, dgl.DGLGraph]
+            The heterogeneous undirected graph, positive undirected DDI graph, negative undirected DDI graph.
+        '''
         if self.batch_size is None:
             yield self.graph_undirected, self.ddi_graph_undirected, to_bidirected(dgl.heterograph(
                 {("Drug", "!DDI", "Drug"): dgl.sampling.global_uniform_negative_sampling(
@@ -102,13 +146,10 @@ class DDIDataLoader:
                 num_nodes_dict={"Drug": self.dataset.graph.number_of_nodes("Drug")}
             ))
         else:
-            with self.dataloader.enable_cpu_affinity():
+            with self.dataloader.enable_cpu_affinity(verbose=False):
                 for input_nodes, pos_pair_graph, neg_pair_graph, blocks in self.dataloader:
+                    graph = to_bidirected(self.dataset.fullgraph_from_ddi(blocks[0]))
                     pos_pair_graph = to_bidirected(pos_pair_graph)
                     neg_pair_graph = to_bidirected(neg_pair_graph)
-                    ddi_graph_split = split_etype(blocks[0])
-                    graph = combine_graphs(ddi_graph_split, self.dataset.graph['DPI'], self.dataset.graph['PDI'], self.dataset.graph['PPI'])
-                    graph.ndata['feature'] = self.dataset.graph.ndata['feature']
-                    graph = to_bidirected(graph)
                     yield graph, pos_pair_graph, neg_pair_graph
 

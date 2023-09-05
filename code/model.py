@@ -19,6 +19,14 @@ class RGCN(nn.Module):
         self.conv3 = dgl.nn.HeteroGraphConv(Conv3_dict, aggregate='sum')
 
     def forward(self, graph: dgl.DGLGraph, inputs: dict[str, torch.Tensor]):
+        '''
+        Parameters
+        ----------
+        graph : DGLGraph
+            The heterogeneous graph.
+        inputs : dict[str, Tensor]
+            The input node features. The keys are the node types.
+        '''
         h = self.conv1(graph, inputs)
         h = {k: F.relu(v) for k, v in h.items()}
         h = self.conv2(graph, h)
@@ -41,7 +49,7 @@ class MLPPredictor(nn.Module):
         score = self.W2(h)
         return {'score': score}
 
-    def forward(self, graph: dgl.DGLGraph, h: torch.Tensor):
+    def forward(self, graph: dgl.DGLGraph, h: torch.Tensor) -> torch.Tensor:
         '''
         Parameters
         ----------
@@ -49,6 +57,11 @@ class MLPPredictor(nn.Module):
             The graph that only contains 'Drug' nodes.
         h : Tensor
             Input node features, i.e., the output for each drug by RGCN.
+
+        Returns
+        -------
+        Tensor
+            The predicted score for each edge.
         '''
         with graph.local_scope():
             graph.ndata['h'] = h

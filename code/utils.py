@@ -1,4 +1,5 @@
 import dgl
+import dgl.utils
 import torch
 import pandas as pd
 

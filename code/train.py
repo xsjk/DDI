@@ -24,7 +24,7 @@ from sklearn.metrics import f1_score, accuracy_score, precision_score, recall_sc
 
 from model import *
 from utils import *
-from data import *
+from dataset import *
 
 from typing import Optional
 

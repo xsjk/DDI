@@ -191,6 +191,9 @@ if __name__ == '__main__':
         version=None if args.subcommand == 'new' else args.checkpoint_path.split('/')[-3]
     )
 
+    if args.early_stop_patience > 0:
+        print(f'early stopping is enabled, patience = {args.early_stop_patience}')
+
     trainer = Trainer(
         max_epochs=-1,
         strategy='ddp_find_unused_parameters_true',

@@ -31,7 +31,6 @@ from typing import Optional
 DEFAULT_HIDDEN_SIZE = 512
 DEFAULT_BATCH_SIZE = None
 DEFAULT_LEARNING_RATE = 1e-3
-DEFAULT_MIN_SAMPLE_SIZE = 1
 
 class Model(pl.LightningModule):
 
@@ -39,7 +38,6 @@ class Model(pl.LightningModule):
                  pkl_path: str = '../dataset.pkl', 
                  hidden_size=DEFAULT_HIDDEN_SIZE, 
                  learning_rate: float = DEFAULT_LEARNING_RATE,
-                 min_sample_size: int = DEFAULT_MIN_SAMPLE_SIZE,
                  batch_size: Optional[int] = DEFAULT_BATCH_SIZE
                  ):
         super().__init__()
@@ -50,14 +48,13 @@ class Model(pl.LightningModule):
         self.batch_size = batch_size
         self.save_hyperparameters()
 
-        self.dataset = DDIDataSet(pkl_path, min_sample_size)
+        self.dataset = DDIDataSet(pkl_path)
 
         # build model
         self.sage = RGCN(
             in_feats_d = self.dataset.num_drug_features,
             in_feats_p = self.dataset.num_protein_features,
-            hidden_size = hidden_size,
-            out_feats = self.dataset.num_ddi_types + 1,
+            out_feats = hidden_size,
             rel_names = [f'DDI_{y:02}' for y in self.dataset.ddi_types] + ['DPI', 'PDI', 'PPI']
         )
         self.predictor = MLPPredictor(
@@ -118,7 +115,6 @@ class Model(pl.LightningModule):
         ----------
         hg : DGLGraph
             The heterogeneous graph that contains 'Drug', 'Protein' nodes and 'DDI', 'DPI', 'PDI', 'PPI' edges.
-            The graph should be bidirected.
         ddi_graphs : DGLGraph
             The graphs that contains 'Drug' nodes and 'DDI' edges for prediction.
         Returns
@@ -145,7 +141,6 @@ def config_parser(parser: ArgumentParser = ArgumentParser()) -> ArgumentParser:
     model_parser.add_argument('--hidden-size', type=int, default=DEFAULT_HIDDEN_SIZE, help='Hidden size of the model')
     model_parser.add_argument('--learning-rate', type=float, default=DEFAULT_LEARNING_RATE, help='Learning rate of the optimizer')
     model_parser.add_argument('--batch-size', type=int, default=DEFAULT_BATCH_SIZE, help='Batch size of the dataloader')
-    model_parser.add_argument('--min-sample-size', type=int, default=DEFAULT_MIN_SAMPLE_SIZE, help='Minimum sample size of each DDI type, used to filter out the DDI types with few samples')
 
     resume_parser = resume_parser.add_argument_group('Resume')
     resume_parser.add_argument('checkpoint_path', type=str, default=None)
@@ -216,7 +211,6 @@ if __name__ == '__main__':
                 pkl_path=args.pkl_path, 
                 hidden_size=args.hidden_size, 
                 learning_rate=args.learning_rate,
-                min_sample_size=args.min_sample_size,
                 batch_size=args.batch_size
             )
             trainer.fit(model)

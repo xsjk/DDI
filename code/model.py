@@ -7,15 +7,15 @@ import torch.nn.functional as F
 from typing import Iterable
 
 class RGCN(nn.Module):
-    def __init__(self, in_feats_d: int, in_feats_p: int, hidden_size: int, out_feats: int, rel_names: Iterable[str]):
+    def __init__(self, in_feats_d: int, in_feats_p: int, out_feats: int, rel_names: Iterable[str]):
         super().__init__()
-        Conv1_dict = {rel_name: dgl.nn.GraphConv(in_feats_d, hidden_size) for rel_name in rel_names}
-        Conv1_dict['PDI'] = dgl.nn.GraphConv(in_feats_p, hidden_size)
-        Conv1_dict['PPI'] = dgl.nn.GraphConv(in_feats_p, hidden_size)
+        Conv1_dict = {rel_name: dgl.nn.GraphConv(in_feats_d, out_feats) for rel_name in rel_names}
+        Conv1_dict['PDI'] = dgl.nn.GraphConv(in_feats_p, out_feats)
+        Conv1_dict['PPI'] = dgl.nn.GraphConv(in_feats_p, out_feats)
         self.conv1 = dgl.nn.HeteroGraphConv(Conv1_dict)
-        Conv2_dict = {rel_name: dgl.nn.GraphConv(hidden_size, hidden_size) for rel_name in rel_names}
+        Conv2_dict = {rel_name: dgl.nn.GraphConv(out_feats, out_feats) for rel_name in rel_names}
         self.conv2 = dgl.nn.HeteroGraphConv(Conv2_dict, aggregate='sum')
-        Conv3_dict = {rel_name: dgl.nn.GraphConv(hidden_size, hidden_size) for rel_name in rel_names}
+        Conv3_dict = {rel_name: dgl.nn.GraphConv(out_feats, out_feats) for rel_name in rel_names}
         self.conv3 = dgl.nn.HeteroGraphConv(Conv3_dict, aggregate='sum')
 
     def forward(self, graph: dgl.DGLGraph, inputs: dict[str, torch.Tensor]):

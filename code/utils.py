@@ -18,31 +18,6 @@ def num_nodes_dict(graph: dgl.DGLGraph) -> dict[str, int]:
     '''
     return {ntype: graph.number_of_nodes(ntype) for ntype in graph.ntypes}
 
-def to_bidirected(graph: dgl.DGLGraph) -> dgl.DGLGraph:
-    '''
-    Parameters
-    ----------
-    graph : DGLGraph
-        The graph to be converted to bidirected.
-    
-    Returns
-    -------
-    DGLGraph
-        The bidirected graph.
-    '''
-    data = {}
-    for (ntype1, etype, ntype2) in graph.canonical_etypes:
-        u, v = graph[etype].edges()
-        if ntype1 == ntype2:
-            u, v = torch.cat([u, v]), torch.cat([v, u])
-        data[(ntype1, etype, ntype2)] = (u, v)
-    graph_undirected = dgl.heterograph(data, num_nodes_dict=num_nodes_dict(graph))
-    for k, v in graph.ndata.items():
-        graph_undirected.ndata[k] = v
-    for k, v in graph.edata.items():
-        graph_undirected.edata[k] = torch.cat([v, v])
-    return graph_undirected
-
 def combine_graphs(*graphs, **kwargs) -> dgl.DGLGraph:
     '''
     Parameters

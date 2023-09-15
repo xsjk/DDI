@@ -5,7 +5,7 @@ from typing import Optional
 
 class DDIDataSet:
 
-    def __init__(self, pkl_path: str, min_sample_size: int = 1) -> None:
+    def __init__(self, pkl_path: str) -> None:
         '''
         Parameters
         ----------
@@ -24,17 +24,6 @@ class DDIDataSet:
         self.graph = get_graph(self.data)
         self.ndata = self.graph.ndata
         self.ddi_graph = self.graph['Drug', :, 'Drug']
-
-        # drop the type which has not enough samples
-        types = pd.Series(self.ddi_graph.edata[dgl.ETYPE].cpu())
-        value_counts = types.value_counts()
-        types_to_drop = value_counts[value_counts < min_sample_size].index
-        if len(types_to_drop):
-            print('Ignore DDI types:', sorted(types_to_drop), 'since they have less than', min_sample_size, 'samples')
-        indices_to_drop = types[types.isin(types_to_drop)].index
-        self.ddi_graph = dgl.remove_edges(self.ddi_graph, indices_to_drop)
-        self.graph = combine_graphs(split_etype(self.ddi_graph), self.graph['DPI'], self.graph['PDI'], self.graph['PPI'], num_nodes_dict=self.num_nodes_dict)
-        self.graph.ndata['feature'] = self.ndata['feature']
 
     @property
     def num_drug_features(self) -> int:
@@ -103,7 +92,7 @@ class DDIDataSet:
 
 class DDIDataLoader:
 
-    def __init__(self, dataset: DDIDataSet, eids: np.ndarray, batch_size: Optional[int], neg_sample_rate: float = 0.1) -> None:
+    def __init__(self, dataset: DDIDataSet, eids: np.ndarray, batch_size: Optional[int], fanouts: list = [-1], neg_sample_rate: float = 0.1) -> None:
         '''
         Parameters
         ----------
@@ -122,7 +111,7 @@ class DDIDataLoader:
                 self.dataset.ddi_graph, 
                 indices=eids,
                 graph_sampler=dgl.dataloading.as_edge_prediction_sampler(
-                    sampler=dgl.dataloading.NeighborSampler([-1]),
+                    sampler=dgl.dataloading.NeighborSampler(fanouts),
                     negative_sampler=dgl.dataloading.negative_sampler.GlobalUniform(int(round(
                         neg_sample_rate * dataset.num_ddi / batch_size
                     ))),
@@ -134,8 +123,8 @@ class DDIDataLoader:
                 num_workers=1,
             )
         else:
-            self.graph_undirected = to_bidirected(self.dataset.subgraph(eids))
-            self.ddi_graph_undirected = to_bidirected(self.dataset.ddi_subgraph(eids))
+            self.graph = self.dataset.subgraph(eids)
+            self.ddi_graph = self.dataset.ddi_subgraph(eids)
 
     def __iter__(self) -> tuple[dgl.DGLGraph, dgl.DGLGraph, dgl.DGLGraph]:
         '''
@@ -145,16 +134,14 @@ class DDIDataLoader:
             The heterogeneous undirected graph, positive undirected DDI graph, negative undirected DDI graph.
         '''
         if self.batch_size is None:
-            yield self.graph_undirected, self.ddi_graph_undirected, to_bidirected(dgl.heterograph(
+            yield self.graph, self.ddi_graph, dgl.heterograph(
                 {("Drug", "!DDI", "Drug"): dgl.sampling.global_uniform_negative_sampling(
                     self.dataset.ddi_graph, int(self.dataset.num_ddi * self.neg_sample_rate))},
                 num_nodes_dict={"Drug": self.dataset.graph.number_of_nodes("Drug")}
-            ))
+            )
         else:
             with self.dataloader.enable_cpu_affinity(verbose=False):
                 for input_nodes, pos_pair_graph, neg_pair_graph, blocks in self.dataloader:
-                    graph = to_bidirected(self.dataset.fullgraph_from_ddi(blocks[0]))
-                    pos_pair_graph = to_bidirected(pos_pair_graph)
-                    neg_pair_graph = to_bidirected(neg_pair_graph)
+                    graph = self.dataset.fullgraph_from_ddi(blocks[0])
                     yield graph, pos_pair_graph, neg_pair_graph
 

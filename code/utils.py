@@ -99,7 +99,7 @@ def get_graph(data: dict[str, pd.DataFrame]) -> dgl.DGLGraph:
     ----------
     data : dict[str, pd.DataFrame]
         The data to be converted to a heterograph.
-        The keys are 'DDI', 'DTI', 'PPI', 'Drugs', 'Proteins', 'DrugFeatures', 'ProteinFeatures'.
+        The keys are 'DDI', 'DPI', 'PPI', 'Drugs', 'Proteins', 'DrugFeatures', 'ProteinFeatures'.
 
     Returns
     -------
@@ -107,18 +107,18 @@ def get_graph(data: dict[str, pd.DataFrame]) -> dgl.DGLGraph:
         The heterograph.
     '''
     graph_data = {
-        'DDI': data['DDI'].copy(),
-        'DPI': data['DTI'].copy(),
-        'PPI': data['PPI'].copy(),
+        'DDI': data['DDI'].reset_index(),
+        'DPI': data['DPI'].reset_index(),
+        'PPI': data['PPI'].reset_index()
     }
-    drug_indices = data['Drugs'].reset_index().reset_index().set_index('Drug_ID')['index']
-    protein_indices = data['Proteins'].reset_index().reset_index().set_index('Protein_ID')['index']
-    graph_data['DDI']['Drug1_ID'] = data['DDI']['Drug1_ID'].map(drug_indices)
-    graph_data['DDI']['Drug2_ID'] = data['DDI']['Drug2_ID'].map(drug_indices)
-    graph_data['DPI']['Drug_ID'] = data['DTI']['Drug_ID'].map(drug_indices)
-    graph_data['DPI']['Protein_ID'] = data['DTI']['Protein_ID'].map(protein_indices)
-    graph_data['PPI']['Protein1_ID'] = data['PPI']['Protein1_ID'].map(protein_indices)
-    graph_data['PPI']['Protein2_ID'] = data['PPI']['Protein2_ID'].map(protein_indices)
+    drug_indices = pd.Series(data['Drugs'].index).reset_index().set_index('Drug_ID')['index']
+    protein_indices = pd.Series(data['Proteins'].index).reset_index().set_index('Protein_ID')['index']
+    graph_data['DDI']['Drug1_ID'] = graph_data['DDI']['Drug1_ID'].map(drug_indices)
+    graph_data['DDI']['Drug2_ID'] = graph_data['DDI']['Drug2_ID'].map(drug_indices)
+    graph_data['DPI']['Drug_ID'] = graph_data['DPI']['Drug_ID'].map(drug_indices)
+    graph_data['DPI']['Protein_ID'] = graph_data['DPI']['Protein_ID'].map(protein_indices)
+    graph_data['PPI']['Protein1_ID'] = graph_data['PPI']['Protein1_ID'].map(protein_indices)
+    graph_data['PPI']['Protein2_ID'] = graph_data['PPI']['Protein2_ID'].map(protein_indices)
 
     # Create a heterograph from the graph data
     g = dgl.heterograph({
@@ -139,6 +139,9 @@ def get_graph(data: dict[str, pd.DataFrame]) -> dgl.DGLGraph:
             torch.tensor(graph_data['PPI']['Protein1_ID'].values),
             torch.tensor(graph_data['PPI']['Protein2_ID'].values)
         )
+    }, num_nodes_dict={
+        'Drug': len(data['Drugs']),
+        'Protein': len(data['Proteins'])
     })
     g.nodes['Drug'].data['feature'] = torch.tensor(data['DrugFeatures'])
     g.nodes['Protein'].data['feature'] = torch.tensor(data['ProteinFeatures'])

@@ -31,7 +31,7 @@ from typing import Optional
 DEFAULT_HIDDEN_SIZE = 512
 DEFAULT_BATCH_SIZE = None
 DEFAULT_LEARNING_RATE = 1e-3
-DEFAULT_MIN_SAMPLE_SIZE = 10
+DEFAULT_MIN_SAMPLE_SIZE = 1
 
 class Model(pl.LightningModule):
 

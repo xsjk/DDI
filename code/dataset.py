@@ -5,7 +5,7 @@ from typing import Optional
 
 class DDIDataSet:
 
-    def __init__(self, pkl_path: str, min_sample_size: int = 10) -> None:
+    def __init__(self, pkl_path: str, min_sample_size: int = 1) -> None:
         '''
         Parameters
         ----------
@@ -15,8 +15,12 @@ class DDIDataSet:
         
         # load data
         self.data = pkl.load(open(pkl_path, 'rb'))
-        self.data['Drugs'] = self.data['Drugs'].reset_index().reset_index().set_index('Drug_ID')
-        self.data['Proteins'] = self.data['Proteins'].reset_index().reset_index().set_index('Protein_ID')
+        self.num_nodes_dict = {
+            'Drug': len(self.data['Drugs']),
+            'Protein': len(self.data['Proteins'])
+        }
+        self.data['Drugs'] = self.data['Drugs'].to_frame().reset_index().reset_index().set_index('Drug_ID')
+        self.data['Proteins'] = self.data['Proteins'].to_frame().reset_index().reset_index().set_index('Protein_ID')
         self.graph = get_graph(self.data)
         self.ndata = self.graph.ndata
         self.ddi_graph = self.graph['Drug', :, 'Drug']
@@ -25,10 +29,11 @@ class DDIDataSet:
         types = pd.Series(self.ddi_graph.edata[dgl.ETYPE].cpu())
         value_counts = types.value_counts()
         types_to_drop = value_counts[value_counts < min_sample_size].index
-        print('Ignore DDI types:', sorted(types_to_drop), 'since they have less than', min_sample_size, 'samples')
+        if len(types_to_drop):
+            print('Ignore DDI types:', sorted(types_to_drop), 'since they have less than', min_sample_size, 'samples')
         indices_to_drop = types[types.isin(types_to_drop)].index
         self.ddi_graph = dgl.remove_edges(self.ddi_graph, indices_to_drop)
-        self.graph = combine_graphs(split_etype(self.ddi_graph), self.graph['DPI'], self.graph['PDI'], self.graph['PPI'])
+        self.graph = combine_graphs(split_etype(self.ddi_graph), self.graph['DPI'], self.graph['PDI'], self.graph['PPI'], num_nodes_dict=self.num_nodes_dict)
         self.graph.ndata['feature'] = self.ndata['feature']
 
     @property
@@ -63,7 +68,7 @@ class DDIDataSet:
         dgl.DGLGraph
             The heterogeneous graph with all DDI edges and all DPI, PDI, PPI edges.
         '''
-        fullgraph = combine_graphs(split_etype(ddi_graph), self.graph['DPI'], self.graph['PDI'], self.graph['PPI'])
+        fullgraph = combine_graphs(split_etype(ddi_graph), self.graph['DPI'], self.graph['PDI'], self.graph['PPI'], num_nodes_dict=self.num_nodes_dict)
         dgl.utils.set_new_frames(fullgraph, node_frames=dgl.utils.extract_node_subframes(self.graph, None))
         return fullgraph
     

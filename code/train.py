@@ -31,6 +31,7 @@ from typing import Optional
 DEFAULT_HIDDEN_SIZE = 512
 DEFAULT_BATCH_SIZE = None
 DEFAULT_LEARNING_RATE = 1e-3
+DEFAULT_NEG_SAMPLE_RATE = 0.01
 
 class Model(pl.LightningModule):
 
@@ -38,7 +39,8 @@ class Model(pl.LightningModule):
                  pkl_path: str = '../dataset.pkl', 
                  hidden_size=DEFAULT_HIDDEN_SIZE, 
                  learning_rate: float = DEFAULT_LEARNING_RATE,
-                 batch_size: Optional[int] = DEFAULT_BATCH_SIZE
+                 batch_size: Optional[int] = DEFAULT_BATCH_SIZE,
+                 neg_sample_rate: Optional[float] = DEFAULT_NEG_SAMPLE_RATE,
                  ):
         super().__init__()
 
@@ -46,6 +48,7 @@ class Model(pl.LightningModule):
         self.pkl_path = pkl_path
         self.learning_rate = learning_rate
         self.batch_size = batch_size
+        self.neg_sample_rate = neg_sample_rate
         self.save_hyperparameters()
 
         self.dataset = DDIDataSet(pkl_path)
@@ -62,6 +65,9 @@ class Model(pl.LightningModule):
             out_classes = self.dataset.num_ddi_types + 1
         )
 
+        # weight = 1 / torch.FloatTensor([self.dataset.num_ddi * neg_sample_rate] + np.unique(self.dataset.ddi_graph.edata[dgl.ETYPE], return_counts=True)[1].tolist())
+        # print('weight', weight)
+        # self.loss_func = nn.CrossEntropyLoss(weight)
         self.loss_func = nn.CrossEntropyLoss()
 
     def setup(self, stage: str = None) -> None:
@@ -71,7 +77,7 @@ class Model(pl.LightningModule):
         )
 
     def train_dataloader(self) -> TRAIN_DATALOADERS:
-        return DDIDataLoader(self.dataset, self.train_eid, batch_size=self.batch_size)
+        return DDIDataLoader(self.dataset, self.train_eid, batch_size=self.batch_size, neg_sample_rate=self.neg_sample_rate)
 
     def training_step(self, batch: tuple[dgl.DGLGraph, dgl.DGLGraph, dgl.DGLGraph], batch_idx: int) -> STEP_OUTPUT:
         graph, pos_pair_graph, neg_pair_graph = batch
@@ -86,7 +92,7 @@ class Model(pl.LightningModule):
         return loss
     
     def val_dataloader(self) -> EVAL_DATALOADERS:
-        return DDIDataLoader(self.dataset, self.test_eid, batch_size=self.batch_size)
+        return DDIDataLoader(self.dataset, self.test_eid, batch_size=None, neg_sample_rate=self.neg_sample_rate)
 
     def validation_step(self, batch: tuple[dgl.DGLGraph, dgl.DGLGraph, dgl.DGLGraph], batch_idx: int) -> STEP_OUTPUT:
         graph, pos_pair_graph, neg_pair_graph = batch
@@ -96,6 +102,8 @@ class Model(pl.LightningModule):
         real_label = torch.cat([pos_pair_graph.edata[dgl.ETYPE] + 1, 
                                 torch.zeros(neg_score.shape[0], device=self.device, dtype=torch.int)])
         loss = self.loss_func(prediction, real_label)
+
+        print(pd.Series(torch.argmax(pos_score, dim=1).cpu()).value_counts())
 
         pred_label = torch.argmax(prediction, dim=1).cpu()
         real_label = real_label.cpu()
@@ -141,6 +149,7 @@ def config_parser(parser: ArgumentParser = ArgumentParser()) -> ArgumentParser:
     model_parser.add_argument('--hidden-size', type=int, default=DEFAULT_HIDDEN_SIZE, help='Hidden size of the model')
     model_parser.add_argument('--learning-rate', type=float, default=DEFAULT_LEARNING_RATE, help='Learning rate of the optimizer')
     model_parser.add_argument('--batch-size', type=int, default=DEFAULT_BATCH_SIZE, help='Batch size of the dataloader')
+    model_parser.add_argument('--neg-sample-rate', type=float, default=DEFAULT_NEG_SAMPLE_RATE, help='Negative sample rate of the dataloader')
 
     resume_parser = resume_parser.add_argument_group('Resume')
     resume_parser.add_argument('checkpoint_path', type=str, default=None)
@@ -211,7 +220,8 @@ if __name__ == '__main__':
                 pkl_path=args.pkl_path, 
                 hidden_size=args.hidden_size, 
                 learning_rate=args.learning_rate,
-                batch_size=args.batch_size
+                batch_size=args.batch_size,
+                neg_sample_rate=args.neg_sample_rate
             )
             trainer.fit(model)
         case 'resume':
